@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import socket
@@ -73,7 +74,7 @@ class Nanoleaf:
         self._host = host
         self._auth_token = auth_token
         self._port = port
-        self._retries = 3
+        self._retries = retries  # honor constructor argument
 
     @property
     def host(self) -> str:
@@ -214,9 +215,40 @@ class Nanoleaf:
         """Return a list of all panels."""
         return self._panels
 
+    # ---------- URL construction helpers ----------
+
+    def _format_host_for_url(self, host: str) -> str:
+        """
+        Return a host string suitable for inclusion in http://<host>:<port>/... URLs.
+
+        - IPv4 and hostnames are returned unchanged.
+        - IPv6 literals are wrapped in square brackets.
+        - IPv6 zone IDs (e.g., '%en0') are percent-encoded to '%25en0'.
+
+        Note: We DO NOT mutate self._host; we only format for URL building.
+        """
+        raw = host.strip("[]")
+        try:
+            # If the part before any zone id is an IP, handle it
+            ip = ipaddress.ip_address(raw.split("%", 1)[0])
+            if ip.version == 6:
+                # Percent-encode zone id if present
+                if "%" in raw:
+                    base, zone = raw.split("%", 1)
+                    raw = f"{base}%25{zone}"
+                return f"[{raw}]"
+        except ValueError:
+            # Not an IP literal (likely a hostname) -> unchanged
+            pass
+        return host
+
     @property
     def _api_url(self) -> str:
-        return f"http://{self.host}:{self.port}/api/v1"
+        """Base HTTP API URL (host formatted for IPv6, if needed)."""
+        host_for_url = self._format_host_for_url(self.host)
+        return f"http://{host_for_url}:{self.port}/api/v1"
+
+    # ---------- HTTP helpers ----------
 
     async def _request(
         self, method: str, path: str, data: dict | None = None
@@ -278,6 +310,8 @@ class Nanoleaf:
         """Remove the auth_token from the Nanoleaf."""
         await self._request("delete", "")
         self._auth_token = None
+
+    # ---------- Device info & state ----------
 
     async def get_info(self) -> None:
         """Get all device info."""
@@ -400,6 +434,8 @@ class Nanoleaf:
     async def identify(self) -> None:
         """Identify the Nanoleaf."""
         await self._request("put", "identify")
+
+    # ---------- Events ----------
 
     async def _open_websocket_for_touch_data_stream(
         self,
